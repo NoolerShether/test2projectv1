@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FlappyMouse</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: fixed;
+            background: #0a0a0a;
+            font-family: 'Courier New', monospace;
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            position: relative;
+            z-index: 1;
+        }
+
+        #ui {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #fff;
+            pointer-events: none;
+            width: 90%;
+            z-index: 10;
+        }
+
+        #ui * {
+            pointer-events: none;
+        }
+
+        #startText {
+            font-size: 24px;
+            margin-top: 5px;
+            color: #fff;
+            font-weight: bold;
+        }
+
+        #gameOver {
+            font-size: 48px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        @media (max-width: 400px) {
+            #gameOver { font-size: 36px; }
+            #startText { font-size: 18px; }
+        }
+    </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="ui">
+    <div id="gameOver" style="display: none;">GAME OVER</div>
+    <div id="startText">PRESS TO START</div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Подключаем Telegram Web App
+    let tg = null;
+    let isTelegramEnv = false;
+    let pendingScore = null;
+
+    try {
+        if (window.Telegram && window.Telegram.WebApp) {
+            tg = window.Telegram.WebApp;
+            tg.ready();
+            tg.expand();
+
+            isTelegramEnv = !!tg.initDataUnsafe?.user;
+
+            console.log('✅ Telegram WebApp инициализирован');
+            console.log('User:', tg.initDataUnsafe?.user?.username || 'NO USER');
+            console.log('Platform:', tg.platform);
+
+            // Настраиваем MainButton для отправки результата
+            tg.MainButton.setText('Отправить результат');
+            tg.MainButton.color = '#4CAF50';
+            tg.MainButton.textColor = '#FFFFFF';
+
+            // Обработчик нажатия на MainButton
+            tg.MainButton.onClick(function() {
+                if (pendingScore !== null) {
+                    console.log('📤 Отправка через MainButton:', pendingScore);
+                    tg.sendData(String(pendingScore));
+                    tg.close();
+                }
+            });
+
+        } else {
+            console.warn('❌ Telegram WebApp не найден');
+        }
+    } catch (e) {
+        console.error('❌ Ошибка инициализации:', e);
+    }
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const startTextEl = document.getElementById('startText');
+    const gameOverEl = document.getElementById('gameOver');
+
+    // Игровые переменные
+    let gameStarted = false;
+    let gameOver = false;
+    let score = 0;
+    let frameCount = 0;
+
+    // Летучая мышь
+    const bat = {
+        x: 80,
+        y: window.innerHeight / 2,
+        width: 50,
+        height: 35,
+        velocity: 0,
+        gravity: 0.5,
+        jump: -8.5,
+        rotation: 0,
+        wingFlap: 0,
+        flapDuration: 0
+    };
+
+    // Трубы
+    const pipes = [];
+    const pipeWidth = 60;
+    const pipeGap = 170;
+    const pipeSpeed = 3;
+    let pipeTimer = 0;
+    const pipeInterval = 80;
+
+    // Адаптация размера канваса под экран
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        if (!gameStarted) {
+            bat.y = canvas.height / 2;
+        }
+    }
+
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // Рисуем птицу в стиле Flappy Bird
+    function drawBat() {
+        ctx.save();
+        ctx.translate(bat.x, bat.y);
+
+        const rot = Math.min(Math.max(bat.velocity * 0.05, -0.5), 0.5);
+        ctx.rotate(rot);
+
+        let wingFlap = 0;
+        if (!gameStarted) {
+            wingFlap = Math.sin(frameCount * 0.3) > 0 ? -8 : 8;
+        } else if (bat.flapDuration > 0) {
+            wingFlap = -8;
+            bat.flapDuration--;
+        } else {
+            wingFlap = 8;
+        }
+
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(2, 2, 8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.ellipse(-8, wingFlap, 10, 6, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.moveTo(10, -2);
+        ctx.lineTo(16, 0);
+        ctx.lineTo(10, 2);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(4, -4, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(5, -4, 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.moveTo(-12, -3);
+        ctx.lineTo(-18, 0);
+        ctx.lineTo(-12, 3);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-2, 10);
+        ctx.lineTo(-2, 14);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(2, 10);
+        ctx.lineTo(2, 14);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function drawPipes() {
+        pipes.forEach(pipe => {
+            ctx.fillStyle = '#aaa';
+            ctx.fillRect(pipe.x, 0, pipeWidth, pipe.top - 30);
+            ctx.fillRect(pipe.x - 5, pipe.top - 30, pipeWidth + 10, 30);
+            ctx.fillRect(pipe.x - 5, pipe.bottom, pipeWidth + 10, 30);
+            ctx.fillRect(pipe.x, pipe.bottom + 30, pipeWidth, canvas.height - pipe.bottom - 30);
+
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(pipe.x, 0, pipeWidth, pipe.top - 30);
+            ctx.strokeRect(pipe.x - 5, pipe.top - 30, pipeWidth + 10, 30);
+            ctx.strokeRect(pipe.x - 5, pipe.bottom, pipeWidth + 10, 30);
+            ctx.strokeRect(pipe.x, pipe.bottom + 30, pipeWidth, canvas.height - pipe.bottom - 30);
+        });
+    }
+
+    function createPipe() {
+        const minTop = 100;
+        const maxTop = canvas.height - pipeGap - 100;
+        const top = Math.random() * (maxTop - minTop) + minTop;
+
+        pipes.push({
+            x: canvas.width,
+            top: top,
+            bottom: top + pipeGap,
+            passed: false
+        });
+    }
+
+    function updatePipes() {
+        if (gameStarted && !gameOver) {
+            pipeTimer++;
+            if (pipeTimer > pipeInterval) {
+                createPipe();
+                pipeTimer = 0;
+            }
+        }
+
+        pipes.forEach((pipe, index) => {
+            if (gameStarted && !gameOver) {
+                pipe.x -= pipeSpeed;
+            }
+
+            if (!pipe.passed && pipe.x + pipeWidth < bat.x) {
+                pipe.passed = true;
+                score++;
+            }
+
+            if (pipe.x + pipeWidth < 0) {
+                pipes.splice(index, 1);
+            }
+        });
+    }
+
+    function checkCollision() {
+        if (bat.y + bat.height / 2 > canvas.height || bat.y - bat.height / 2 < 0) {
+            return true;
+        }
+
+        for (let pipe of pipes) {
+            if (bat.x + bat.width / 2 > pipe.x &&
+                bat.x - bat.width / 2 < pipe.x + pipeWidth) {
+                if (bat.y - bat.height / 2 < pipe.top ||
+                    bat.y + bat.height / 2 > pipe.bottom) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // Функция отправки результата
+    function handleGameOver(finalScore) {
+        console.log('🎮 Game Over! Score:', finalScore);
+
+        if (tg && isTelegramEnv) {
+            pendingScore = finalScore;
+
+            // Показываем MainButton для отправки результата
+            tg.MainButton.setText(`Отправить результат: ${finalScore}`);
+            tg.MainButton.show();
+
+            console.log('✅ MainButton показана');
+        } else {
+            console.warn('⚠️ Не в среде Telegram');
+        }
+    }
+
+    function update() {
+        if (gameStarted && !gameOver) {
+            bat.velocity += bat.gravity;
+            bat.y += bat.velocity;
+
+            updatePipes();
+
+            if (checkCollision()) {
+                gameOver = true;
+                gameOverEl.style.display = 'block';
+                startTextEl.innerHTML = 'TAP TO RESTART';
+                startTextEl.style.display = 'block';
+
+                handleGameOver(score);
+            }
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = '#171717';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#333';
+        for (let i = 0; i < 4; i++) {
+            const x = (frameCount * 0.5 + i * 120) % (canvas.width + 80);
+            const y = 60 + i * 40;
+            ctx.beginPath();
+            ctx.arc(x, y, 18, 0, Math.PI * 2);
+            ctx.arc(x + 18, y, 22, 0, Math.PI * 2);
+            ctx.arc(x + 36, y, 18, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        drawPipes();
+        drawBat();
+
+        if (gameStarted) {
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 24px Courier New';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillText('Score: ' + score, 20, 40);
+        }
+    }
+
+    let lastTime = 0;
+    const targetFPS = 60;
+    const frameDelay = 1000 / targetFPS;
+
+    function gameLoop(currentTime) {
+        requestAnimationFrame(gameLoop);
+
+        const deltaTime = currentTime - lastTime;
+
+        if (deltaTime >= frameDelay) {
+            lastTime = currentTime - (deltaTime % frameDelay);
+            update();
+            draw();
+            frameCount++;
+        }
+    }
+
+    function jump() {
+        if (!gameStarted) {
+            gameStarted = true;
+            startTextEl.style.display = 'none';
+            gameOverEl.style.display = 'none';
+            pipeTimer = 60;
+        } else if (gameOver) {
+            // Скрываем MainButton при рестарте
+            if (tg && tg.MainButton) {
+                tg.MainButton.hide();
+            }
+
+            bat.y = canvas.height / 2;
+            bat.velocity = 0;
+            bat.flapDuration = 0;
+            pipes.length = 0;
+            score = 0;
+            gameOver = false;
+            gameStarted = true;
+            startTextEl.style.display = 'none';
+            gameOverEl.style.display = 'none';
+            pipeTimer = 60;
+            pendingScore = null;
+        } else {
+            bat.velocity = bat.jump;
+            bat.flapDuration = 10;
+        }
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+            e.preventDefault();
+            jump();
+        }
+    });
+
+    canvas.addEventListener('click', jump);
+
+    canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        jump();
+    }, { passive: false });
+
+    gameLoop();
+});
+</script>
+</body>
+</html>
